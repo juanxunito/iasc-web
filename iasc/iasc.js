@@ -18,7 +18,7 @@
     sueltos: { nombre: "Test sueltos", tests: null, texto: "Eliges cuáles, p. ej. tras leer una ficha" }
   };
 
-  var S = { usuario: null, nombre: "", vista: "buzon", pacientes: [], convocatorias: [], envios: [], sel: null, msg: "", ultimoEnvio: 0, filtro: "", orden: "reciente", nuevoEnlace: null };
+  var S = { claveBeta: (function () { try { return localStorage.getItem("iasc-clave-beta") === "1"; } catch (x) { return false; } })(), usuario: null, nombre: "", vista: "buzon", pacientes: [], convocatorias: [], envios: [], sel: null, msg: "", ultimoEnvio: 0, filtro: "", orden: "reciente", nuevoEnlace: null };
 
   // ---------- utilidades ----------
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
@@ -58,11 +58,16 @@
       '<label><span>Contraseña</span><input id="l-clave" name="password" type="password" autocomplete="current-password" required></label>' +
       (error ? '<p class="ko">' + esc(error) + "</p>" : "") +
       '<button class="pri" type="submit" style="width:100%">Entrar</button>' +
-      '<p class="beta small" style="margin-top:14px">Beta: usuario <b>admin</b>, contraseña <b>admin</b>. Cámbiala antes de dar acceso a nadie más.</p></form>';
+      '<p class="beta small" style="margin-top:14px">Beta: usuario <b>admin</b>. Si aún tienes la contraseña inicial, IASC te pedirá cambiarla al entrar.</p></form>';
     document.getElementById("f-login").addEventListener("submit", function (ev) {
       ev.preventDefault();
       var u = document.getElementById("l-usuario").value, c = document.getElementById("l-clave").value;
-      entrar(u, c).then(function (r) { if (r.error) pintarLogin("Usuario o contraseña incorrectos."); else arrancar(); });
+      entrar(u, c).then(function (r) {
+        if (r.error) return pintarLogin("Usuario o contraseña incorrectos.");
+        S.claveBeta = c === "admin";   // la contraseña de la beta en una web pública: hay que cambiarla ya
+        try { if (S.claveBeta) localStorage.setItem("iasc-clave-beta", "1"); else localStorage.removeItem("iasc-clave-beta"); } catch (x) {}
+        arrancar();
+      });
     });
   }
 
@@ -101,8 +106,10 @@
     var tabs = [["buzon", "Buzón" + (nuevos ? '<span class="insignia">' + nuevos + "</span>" : "")], ["pacientes", "Pacientes"], ["tests", "Tests y enlaces"], ["info", "Info"], ["licencias", "Licencias"]];
     var h = '<header class="barra"><span class="marca">IASC</span><nav class="tabs">' +
       tabs.map(function (t) { return '<button data-a="vista" data-v="' + t[0] + '" class="' + (S.vista === t[0] || (S.vista === "ficha" && t[0] === "buzon") || (S.vista === "paciente" && t[0] === "pacientes") ? "on" : "") + '">' + t[1] + "</button>"; }).join("") +
-      '</nav><span class="quien">' + esc(S.nombre) + '</span><button class="mini" data-a="salir">Salir</button></header><main class="cuerpo">';
+      '</nav><span class="quien">' + esc(S.nombre) + '</span><button class="mini" data-a="vista" data-v="cuenta">Contraseña</button><button class="mini" data-a="salir">Salir</button></header><main class="cuerpo">';
     if (S.msg) h += '<p class="aviso">' + esc(S.msg) + "</p>";
+    if (S.claveBeta && S.vista !== "cuenta") h += '<p class="aviso"><b>Estás usando la contraseña de la beta en una web pública.</b> Cualquiera que la conozca vería tu buzón. <button class="mini pri" data-a="vista" data-v="cuenta">Cambiarla ahora</button></p>';
+    if (S.vista === "cuenta") { raiz.innerHTML = h + vCuenta() + "</main>"; return; }
     h += ({ buzon: vBuzon, pacientes: vPacientes, paciente: vPaciente, tests: vTests, ficha: vFicha, info: vInfo, licencias: vLicencias }[S.vista] || vBuzon)();
     raiz.innerHTML = h + "</main>";
     if (S.vista === "ficha") montarFicha();
@@ -217,6 +224,11 @@
     });
   }
 
+  function vCuenta() {
+    return '<h2>Cambiar contraseña</h2><form class="tarjeta" id="f-clave" style="max-width:420px"><label><span>Contraseña nueva (mínimo 10 caracteres)</span><input id="k-1" type="password" autocomplete="new-password" minlength="10" required></label>' +
+      '<label><span>Repítela</span><input id="k-2" type="password" autocomplete="new-password" minlength="10" required></label><button class="pri" type="submit">Guardar</button>' +
+      '<p class="mut small">Se aplica al momento. El usuario sigue siendo <b>admin</b>.</p></form>';
+  }
   function vInfo() {
     return '<h2>Info</h2><div class="tarjeta"><p><b>IASC</b> es la herramienta del profesional. Desde aquí se crean los enlaces a los test, llegan las respuestas y se leen las fichas.</p>' +
       "<ol><li>Creas un paciente con un seudónimo (nunca el nombre).</li><li>Generas una convocatoria: valoración inicial, batería completa o test sueltos. Sale un enlace y su QR, propios de ese paciente y de ese envío, válidos 72 h y de un solo uso.</li>" +
@@ -272,6 +284,17 @@
     if (ev.target.name === "c-tipo") document.getElementById("c-sueltos").hidden = ev.target.value !== "sueltos";
   });
   raiz.addEventListener("submit", function (ev) {
+    if (ev.target.id === "f-clave") {
+      ev.preventDefault();
+      var k1 = document.getElementById("k-1").value, k2 = document.getElementById("k-2").value;
+      if (k1 !== k2) return toast("No coinciden.");
+      if (k1.length < 10 || k1 === "admin") return toast("Usa al menos 10 caracteres.");
+      sb.auth.updateUser({ password: "iasc:" + k1 }).then(function (r) {
+        if (r.error) return toast("No se cambió: " + r.error.message);
+        S.claveBeta = false; try { localStorage.removeItem("iasc-clave-beta"); } catch (x) {} S.vista = "buzon"; toast("Contraseña cambiada."); pintar();
+      });
+      return;
+    }
     if (ev.target.id === "f-paciente") {
       ev.preventDefault();
       var seu = document.getElementById("p-seudonimo").value.trim(); if (!seu) return;
